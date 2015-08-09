@@ -523,10 +523,16 @@ public class EmbulkMapReduce
             runner.execSession(new ExecAction<Void>() {  // for Exec.getLogger
                 public Void run() throws IOException
                 {
-                    runner.readPluginArchive().restoreLoadPathsTo(runner.getScriptingContainer());
+                    restorePluginLoadPaths();
                     return null;
                 }
             });
+        }
+
+        protected void restorePluginLoadPaths()
+                throws IOException
+        {
+            runner.readPluginArchive().restoreLoadPathsTo(runner.getScriptingContainer());
         }
 
         @Override
@@ -547,7 +553,7 @@ public class EmbulkMapReduce
         {
             ProcessTask task = runner.getMapReduceExecutorTask().getProcessTask();
 
-            AttemptStateUpdateHandler handler = new AttemptStateUpdateHandler(runner,
+            AttemptStateUpdateHandler handler = newAttemptStateUpdateHandler(runner,
                     new AttemptState(context.getTaskAttemptID(), Optional.of(taskIndex), Optional.of(taskIndex)));
 
             try {
@@ -563,6 +569,11 @@ public class EmbulkMapReduce
                 //    throw ex;
                 //}
             }
+        }
+
+        protected AttemptStateUpdateHandler newAttemptStateUpdateHandler(SessionRunner runner, AttemptState attemptState)
+        {
+            return new AttemptStateUpdateHandler(runner, attemptState);
         }
     }
 
