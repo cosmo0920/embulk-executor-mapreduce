@@ -14,6 +14,7 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.net.MalformedURLException;
+import javax.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.joda.time.format.DateTimeFormat;
 import com.google.inject.Inject;
@@ -59,6 +60,8 @@ public class MapReduceExecutor
     private final Logger log = Exec.getLogger(MapReduceExecutor.class);
     private final ConfigSource systemConfig;
     private final ScriptingContainer jruby;
+
+    private Job job = null;
 
     @Inject
     public MapReduceExecutor(@ForSystemConfig ConfigSource systemConfig,
@@ -270,23 +273,31 @@ public class MapReduceExecutor
         try {
             job.submit();
 
-            TaskReportSet reportSet;
-            try (KillJobShutdownHook shutdownHook = KillJobShutdownHook.register(job)) {
-                boolean completed = false;
-                try {
-                    reportSet = waitForJobCompletion(job, stateDir, state, modelManager);
-                    completed = true;
+            TaskReportSet reportSet = new TaskReportSet(job.getJobID());
+            this.job = job;
+
+            int interval = Job.getCompletionPollInterval(job.getConfiguration());
+            while (true) {
+                EmbulkMapReduce.JobStatus status = EmbulkMapReduce.getJobStatus(job);
+                if (status.isComplete()) {
+                    break;
+
                 }
-                finally {
-                    if (!completed) {
-                        shutdownHook.kill();
-                    }
-                }
+                log.info(String.format("map %.1f%% reduce %.1f%%",
+                                       status.getMapProgress() * 100, status.getReduceProgress() * 100));
+
+                Thread.sleep(interval);
+
+                updateProcessState(job, reportSet, stateDir, state, modelManager, true);
             }
 
-            // Here calls updateProcessState with inProgress=false because race
+            EmbulkMapReduce.JobStatus status = EmbulkMapReduce.getJobStatus(job);
+            log.info(String.format("map %.1f%% reduce %.1f%%",
+                                   status.getMapProgress() * 100, status.getReduceProgress() * 100));
+            // Here sets inProgress=false to updateProcessState method to tell that race
             // condition of AttemptReport.readFrom and .writeTo does not happen here.
             updateProcessState(job, reportSet, stateDir, state, modelManager, false);
+            this.Job = null;
 
             Counters counters = EmbulkMapReduce.getJobCounters(job);
             if (counters != null) {
@@ -502,49 +513,12 @@ public class MapReduceExecutor
         return builder.build();
     }
 
-    private static class KillJobShutdownHook
-            extends Thread
-            implements AutoCloseable
+    @PreDestroy
+    public void kill()
+        throws IOException
     {
-        public static KillJobShutdownHook register(Job job)
-        {
-            return new KillJobShutdownHook(job).register();
-        }
-
-        private final Job job;
-
-        private KillJobShutdownHook(Job job)
-        {
-            this.job = job;
-        }
-
-        public KillJobShutdownHook register()
-        {
-            Runtime.getRuntime().addShutdownHook(this);
-            return this;
-        }
-
-        @Override
-        public void run()
-        {
-            try {
-                kill();
-            }
-            catch (IOException ex) {
-                throw new RuntimeException(ex);
-            }
-        }
-
-        public void kill()
-                throws IOException
-        {
-            EmbulkMapReduce.killJob(job);
-        }
-
-        @Override
-        public void close()
-        {
-            Runtime.getRuntime().removeShutdownHook(this);
+        if (this.job != null) {
+            EmbulkMapReduce.killJob(this.job);
         }
     }
 }
